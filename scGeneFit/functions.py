@@ -5,11 +5,13 @@ import time
 import sklearn
 import sklearn.manifold
 import scipy.io
+import gurobipy as gp
+from gurobipy import GRB
+import scipy.sparse as sp
 from . import data_files
+import sys
 
-
-
-def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling_rate=1, n_neighbors=3, max_constraints=1000, redundancy=0.01, verbose=True):
+def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling_rate=1, n_neighbors=3, max_constraints=1000, redundancy=0.01, verbose=True, gurobi=True):
     """marker selection algorithm
     data: Nxd numpy array with point coordinates, N: number of points, d: dimension
     labels: list with labels (N labels, one per point)
@@ -25,7 +27,7 @@ def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling
     but just between centers of consecutive labels plus a random fraction of constraints given by redundancy
     if redundancy==1 all constraints between pairs of centers are considered """
     d = data.shape[1]
-    t = time.time()
+    #t = time.time()
     samples, samples_labels, idx = __sample(data, labels, sampling_rate)
 
     if method == 'pairwise_centers':
@@ -38,18 +40,48 @@ def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling
         constraints, smallest_norm = __select_constraints_summarized(data, labels, redundancy)
 
     num_cons = constraints.shape[0]
+    
     if num_cons > max_constraints:
         p = np.random.permutation(num_cons)[0:max_constraints]
         constraints = constraints[p, :]
-    if verbose:
+    if verbose: 
         print('Solving a linear program with {} variables and {} constraints'.format(
             constraints.shape[1], constraints.shape[0]))
-    sol = __lp_markers(constraints, num_markers, smallest_norm * epsilon)
-    if verbose:
-        print('Time elapsed: {} seconds'.format(time.time() - t))
-    x = sol['x'][0:d]
-    markers = sorted(range(len(x)), key=lambda i: x[i], reverse=True)[
-        : num_markers]
+            
+    if True:
+        t = time.time()
+        x = __lp_markers_gurobi(constraints, num_markers, smallest_norm * epsilon)
+        print('GUROBI Time elapsed: {} seconds'.format(time.time() - t))
+        markers = sorted(range(len(x)), key=lambda i: x[i], reverse=True)[: num_markers]
+        markers.sort()
+        print(markers)
+        print(sum([(y < 5e-12) for y in x]), "/", d)
+        
+    if False:
+        t = time.time()
+        sol = __lp_markers(constraints, num_markers, smallest_norm * epsilon)
+        print('SCIPY Time elapsed: {} seconds'.format(time.time() - t))
+        x = sol['x'][0:d]
+        print ("SCIPY OPTIMAL OBJECTIVE:", sol['fun'])
+        markers = sorted(range(len(x)), key=lambda i: x[i], reverse=True)[: num_markers]
+        markers.sort()
+        print(markers)
+        print(sum([(y < 5e-12) for y in x]), "/", d)
+
+    # x = []
+    #
+    #if gurobi:
+    #    x = __lp_markers_gurobi(constraints, num_markers, smallest_norm * epsilon) 
+    #else:
+    #    sol = __lp_markers(constraints, num_markers, smallest_norm * epsilon)
+    #    x = sol['x'][0:d]
+    #    print ("SCIPY OPTIMAL OBJECTIVE:", sol['fun'], sol['status'])
+        
+    #if verbose:
+    #    print('Time elapsed: {} seconds'.format(time.time() - t))
+        
+    markers = sorted(range(len(x)), key=lambda i: x[i], reverse=True)[: num_markers]
+
     return markers
 
 
@@ -214,15 +246,54 @@ def __lp_markers(constraints, num_markers, epsilon):
     m, d = constraints.shape
     c = np.concatenate((np.zeros(d), np.ones(m)))
     l = np.zeros(d + m)
-    u = np.concatenate((np.ones(d), np.array([None for i in range(m)])))
+    u = np.concatenate((np.ones(d), np.array([float('inf') for i in range(m)])))
     aux1 = np.concatenate((constraints, -np.identity(m)), axis=1)
     aux2 = np.concatenate((np.ones((1, d)), np.zeros((1, m))), axis=1)
     A = np.concatenate((aux1, aux2), axis=0)
     b = np.concatenate((-epsilon * np.ones(m), np.array([num_markers])))
     bounds = [(l[i], u[i]) for i in range(d + m)]
+    #sol = scipy.optimize.linprog(c, A, b, None, None, bounds, options = {'tol' : 1e-12})
     sol = scipy.optimize.linprog(c, A, b, None, None, bounds)
     return sol
+    
 
+def __lp_markers_gurobi(constraints, num_markers, epsilon):
+    M = gp.Model("whatever_bro")
+    #M.setParam('OutputFlag', 0) 
+    m, d = constraints.shape
+
+    #M.setParam('FeasibilityTol', 1e-2)
+    #M.setParam('OptimalityTol', 1e-2)
+
+    # create vars
+    u = np.concatenate((np.ones(d), np.array([float('inf') for i in range(m)])))
+    x = M.addMVar(shape = d + m, vtype = GRB.CONTINUOUS, ub = u)
+    
+    # objective function
+    c = np.concatenate((np.zeros(d), np.ones(m)))
+    M.setObjective(c @ x, GRB.MINIMIZE)
+        
+    # system matrix
+    aux1 = np.concatenate((constraints, -np.identity(m)), axis = 1)
+    aux2 = np.concatenate((np.ones((1, d)), np.zeros((1, m))), axis = 1)
+    A = np.concatenate((aux1, aux2), axis = 0)
+    
+    # rhs
+    b = np.concatenate((-epsilon * np.ones(m), np.array([num_markers])))
+    
+    # add constraints
+    M.addConstr(A @ x <= b)
+    
+    # optimize
+    print("starting")
+    M.optimize()
+    
+    v = np.array([p.X for p in M.getVars()[0 : d]])
+    
+    print ("GUROBI OPTIMAL OBJECTIVE:", M.ObjVal)
+    
+    return v
+    
 
 def circles_example(N=30, d=5):
     num_markers = 2
