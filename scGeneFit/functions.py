@@ -57,7 +57,7 @@ def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling
         print(markers)
         print(sum([(y < 5e-12) for y in x]), "/", d)
         
-    if False:
+    if True:
         t = time.time()
         sol = __lp_markers(constraints, num_markers, smallest_norm * epsilon)
         print('SCIPY Time elapsed: {} seconds'.format(time.time() - t))
@@ -259,39 +259,62 @@ def __lp_markers(constraints, num_markers, epsilon):
 
 def __lp_markers_gurobi(constraints, num_markers, epsilon):
     M = gp.Model("whatever_bro")
-    #M.setParam('OutputFlag', 0) 
+    M.setParam('OutputFlag', 0) 
     m, d = constraints.shape
 
-    #M.setParam('FeasibilityTol', 1e-2)
-    #M.setParam('OptimalityTol', 1e-2)
-
     # create vars
-    u = np.concatenate((np.ones(d), np.array([float('inf') for i in range(m)])))
+    u = np.concatenate((
+        np.ones(d),
+        float('inf') * np.ones(m)
+    ))
+    
     x = M.addMVar(shape = d + m, vtype = GRB.CONTINUOUS, ub = u)
     
     # objective function
-    c = np.concatenate((np.zeros(d), np.ones(m)))
+    c = np.concatenate((
+        np.zeros(d), 
+        np.ones(m)
+    ))
+    
     M.setObjective(c @ x, GRB.MINIMIZE)
         
-    # system matrix
-    aux1 = np.concatenate((constraints, -np.identity(m)), axis = 1)
-    aux2 = np.concatenate((np.ones((1, d)), np.zeros((1, m))), axis = 1)
-    A = np.concatenate((aux1, aux2), axis = 0)
+    # system matrix - constraints, betas, alphas
+    row = np.concatenate((
+        np.repeat(np.arange(m), d),
+        np.arange(m), 
+        m * np.ones(d)
+    ))
     
-    # rhs
-    b = np.concatenate((-epsilon * np.ones(m), np.array([num_markers])))
+    col = np.concatenate((
+        np.tile(np.arange(d), m),
+        np.arange(d, d + m), 
+        np.arange(d)
+    ))
+    
+    val = np.concatenate((
+        constraints.flatten(), 
+        -np.ones(m), 
+        np.ones(d)
+    ))
+    
+    A = sp.csr_matrix((val, (row, col)), shape = (m + 1, d + m))
+    
+    # rhs vector
+    b = np.concatenate((
+        -epsilon * np.ones(m), 
+        np.array([num_markers])
+    ))
     
     # add constraints
     M.addConstr(A @ x <= b)
     
     # optimize
-    print("starting")
     M.optimize()
-    
-    v = np.array([p.X for p in M.getVars()[0 : d]])
     
     print ("GUROBI OPTIMAL OBJECTIVE:", M.ObjVal)
     
+    # return alphas
+    v = np.array([p.X for p in M.getVars()[0 : d]])
     return v
     
 

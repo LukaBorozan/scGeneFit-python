@@ -34,6 +34,6 @@ def testfunc(flag, num):
 	return markers
 
 
-for i in [50000, 100000]:
+for i in [50000]:
 	print(i)
 	markers1 = testfunc(True, i)
