@@ -11,7 +11,7 @@ import scipy.sparse as sp
 from . import data_files
 import sys
 
-def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling_rate=1, n_neighbors=3, max_constraints=1000, redundancy=0.01, verbose=True, gurobi=True):
+def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling_rate=1, n_neighbors=3, max_constraints=1000, redundancy=0.01, verbose=True, solver='gurobi'):
     """marker selection algorithm
     data: Nxd numpy array with point coordinates, N: number of points, d: dimension
     labels: list with labels (N labels, one per point)
@@ -26,59 +26,49 @@ def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling
     redundancy: (if method=='centers') in this case not all pairwise constraints are considered 
     but just between centers of consecutive labels plus a random fraction of constraints given by redundancy
     if redundancy==1 all constraints between pairs of centers are considered """
-    d = data.shape[1]
-    #t = time.time()
-    samples, samples_labels, idx = __sample(data, labels, sampling_rate)
-
-    if method == 'pairwise_centers':
-        constraints, smallest_norm = __select_constraints_centers(
-            data, labels, samples, samples_labels)
-    elif method == 'pairwise':
-        constraints, smallest_norm = __select_constraints_pairwise(
-            data, labels, samples, samples_labels, n_neighbors)
-    else:
-        constraints, smallest_norm = __select_constraints_summarized(data, labels, redundancy)
-
-    num_cons = constraints.shape[0]
     
-    if num_cons > max_constraints:
-        p = np.random.permutation(num_cons)[0:max_constraints]
-        constraints = constraints[p, :]
-    if verbose: 
-        print('Solving a linear program with {} variables and {} constraints'.format(
-            constraints.shape[1], constraints.shape[0]))
-            
-    if True:
-        t = time.time()
-        x = __lp_markers_gurobi(constraints, num_markers, smallest_norm * epsilon)
-        print('GUROBI Time elapsed: {} seconds'.format(time.time() - t))
-        markers = sorted(range(len(x)), key=lambda i: x[i], reverse=True)[: num_markers]
-        markers.sort()
-        print(markers)
-        print(sum([(y < 5e-12) for y in x]), "/", d)
-        
-    if True:
-        t = time.time()
-        sol = __lp_markers(constraints, num_markers, smallest_norm * epsilon)
-        print('SCIPY Time elapsed: {} seconds'.format(time.time() - t))
-        x = sol['x'][0:d]
-        print ("SCIPY OPTIMAL OBJECTIVE:", sol['fun'])
-        markers = sorted(range(len(x)), key=lambda i: x[i], reverse=True)[: num_markers]
-        markers.sort()
-        print(markers)
-        print(sum([(y < 5e-12) for y in x]), "/", d)
+    x = []
+    
+    if (solver != 'experimental'):
+        d = data.shape[1]
+    
+        samples, samples_labels, idx = __sample(data, labels, sampling_rate)
 
-    # x = []
-    #
-    #if gurobi:
-    #    x = __lp_markers_gurobi(constraints, num_markers, smallest_norm * epsilon) 
-    #else:
-    #    sol = __lp_markers(constraints, num_markers, smallest_norm * epsilon)
-    #    x = sol['x'][0:d]
-    #    print ("SCIPY OPTIMAL OBJECTIVE:", sol['fun'], sol['status'])
+        if method == 'pairwise_centers':
+            constraints, smallest_norm = __select_constraints_centers(
+                data, labels, samples, samples_labels)
+        elif method == 'pairwise':
+            constraints, smallest_norm = __select_constraints_pairwise(
+                data, labels, samples, samples_labels, n_neighbors)
+        else:
+            constraints, smallest_norm = __select_constraints_summarized(data, labels, redundancy)
+
+        num_cons = constraints.shape[0]
+    
+        if num_cons > max_constraints:
+            p = np.random.permutation(num_cons)[0:max_constraints]
+            constraints = constraints[p, :]
         
-    #if verbose:
-    #    print('Time elapsed: {} seconds'.format(time.time() - t))
+        if verbose: 
+            print('Solving a linear program with {} variables and {} constraints'.format(
+                constraints.shape[1], constraints.shape[0]))
+
+        t = time.time()
+
+        if solver == 'gurobi':
+            x = __lp_markers_gurobi(constraints, num_markers, smallest_norm * epsilon) 
+        elif solver == 'scipy':
+            sol = __lp_markers(constraints, num_markers, smallest_norm * epsilon)
+            x = sol['x'][0:d]
+        else:
+    	    print("ERROR, valid solvers are gurobi and scipy.")    
+    	    return []
+    else:
+    	t = time.time()
+    	x = __lp_markers_cutting(data, labels, num_markers, epsilon) 
+      
+    if verbose:
+        print('Time elapsed: {} seconds'.format(time.time() - t))
         
     markers = sorted(range(len(x)), key=lambda i: x[i], reverse=True)[: num_markers]
 
@@ -311,12 +301,60 @@ def __lp_markers_gurobi(constraints, num_markers, epsilon):
     # optimize
     M.optimize()
     
-    print ("GUROBI OPTIMAL OBJECTIVE:", M.ObjVal)
-    
     # return alphas
-    v = np.array([p.X for p in M.getVars()[0 : d]])
-    return v
+    # return np.array([p.X for p in M.getVars()[0 : d]])
+    return np.array(x[0 : d].X)
+
+
+def __lp_markers_cutting(data, labels, num_markers, epsilon):
+    # number of points, their dimension (size of alpha)
+    n, d = data.shape
     
+    # instantiate the model
+    M = gp.Model("yeeeeehaw")
+    M.setParam('OutputFlag', 0)
+    
+    # add alphas right away
+    a = M.addMVar(shape = d, vtype = GRB.CONTINUOUS, ub = 1, name = "a")
+
+    # add alpha constraint
+    M.addConstr(sum(a) <= num_markers)
+    
+    # add alpha objective
+    M.setObjective(np.zeros(d) @ a, GRB.MINIMIZE)
+    
+    c = None
+    
+    while True:
+    	# check if some constraints are violated
+    	m, constr = __get_cutting_constraints(data, labels, a)
+    	
+        if m == 0:
+    	    return a.X
+	
+	# add constraints and modify the objective
+    	# c = M.addConstr(...)
+    	
+    	# optimize the model
+        M.optimize()
+
+        break	    
+    
+
+    # Needed:
+    # num vars (d), num constraints (m)
+    # system matrix (A):
+    #	keep nonzero, alpha-only rows
+    # rhs vector (b):
+    #   no need to keep, its [-eps ... -eps num_markers]
+    # objective function vector (c):
+    #   no need to keep, its [0 ... 0 1 ... 1] alphas/betas
+    # vectorize updates to A
+    return []
+
+def __get_cutting_constraints(data, labels, a):
+   return 0, []
+
 
 def circles_example(N=30, d=5):
     num_markers = 2
