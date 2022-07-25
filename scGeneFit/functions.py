@@ -9,7 +9,9 @@ import gurobipy as gp
 from gurobipy import GRB
 import scipy.sparse as sp
 from . import data_files
+from annoy import AnnoyIndex
 import sys
+import math
 
 def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling_rate=1, n_neighbors=3, max_constraints=1000, redundancy=0.01, verbose=True, solver='gurobi'):
     """marker selection algorithm
@@ -300,60 +302,109 @@ def __lp_markers_gurobi(constraints, num_markers, epsilon):
     
     # optimize
     M.optimize()
-    
+
+    print("sum beta ", sum(list(x[d : len(x.X)].X)))
+
     # return alphas
     # return np.array([p.X for p in M.getVars()[0 : d]])
     return np.array(x[0 : d].X)
 
 
 def __lp_markers_cutting(data, labels, num_markers, epsilon):
-    # number of points, their dimension (size of alpha)
+    epsilon = __get_eps(data, labels) * epsilon
+    d = data.shape[1]
+    x = None
+    B = np.zeros(1)
+
+    for i in range(99999):
+        A = __get_cutting_constraints(data, labels, x, epsilon)
+        
+        if (len(A) == 0):
+            break
+        
+        if (len(B) == 1):
+            B = A
+        else:
+            B = np.concatenate((B, A))
+        
+        x = __lp_markers_gurobi(-B, num_markers, epsilon) 
+        print(i + 1, B.shape)
+        
+    return x
+
+
+# sum beta  5710.87870464862
+
+# [0, 14, 16, 32, 55, 94, 116, 119, 125, 144, 157, 162, 176, 180, 183, 199, 208, 211, 212, 215, 225, 267, 270, 376, 492]
+
+def __get_annoy_index(data, indices):
+    I = AnnoyIndex(len(indices), 'euclidean')
+    n = data.shape[0]
+    
+    for i in range(n - 1, 0, -1):
+        I.add_item(i, data[i, indices])
+        
+    I.build(10)
+    
+    return I
+    
+
+def __get_eps(data, labels):
     n, d = data.shape
-    
-    # instantiate the model
-    M = gp.Model("yeeeeehaw")
-    M.setParam('OutputFlag', 0)
-    
-    # add alphas right away
-    a = M.addMVar(shape = d, vtype = GRB.CONTINUOUS, ub = 1, name = "a")
+    I = __get_annoy_index(data, range(d))
 
-    # add alpha constraint
-    M.addConstr(sum(a) <= num_markers)
+    # 
+    q = min([
+        np.linalg.norm(data[j] - data[i])
+        for j in range(n)
+        for i in [I.get_nns_by_item(j, 2)[1]]
+    ])
     
-    # add alpha objective
-    M.setObjective(np.zeros(d) @ a, GRB.MINIMIZE)
-    
-    c = None
-    
-    while True:
-    	# check if some constraints are violated
-    	m, constr = __get_cutting_constraints(data, labels, a)
-    	
-        if m == 0:
-    	    return a.X
-	
-	# add constraints and modify the objective
-    	# c = M.addConstr(...)
-    	
-    	# optimize the model
-        M.optimize()
+    I.unbuild()
 
-        break	    
+    return q * q
     
 
-    # Needed:
-    # num vars (d), num constraints (m)
-    # system matrix (A):
-    #	keep nonzero, alpha-only rows
-    # rhs vector (b):
-    #   no need to keep, its [-eps ... -eps num_markers]
-    # objective function vector (c):
-    #   no need to keep, its [0 ... 0 1 ... 1] alphas/betas
-    # vectorize updates to A
-    return []
+def __get_cutting_constraints(data, labels, alpha, epsilon):
+    # create annoy index
+    n, d = data.shape  
 
-def __get_cutting_constraints(data, labels, a):
-   return 0, []
+    if (alpha is None):
+        t = list(range(d))
+    else:
+        t = [i for i in range(d) if alpha[i] > 5e-12]
+        
+    I = __get_annoy_index(data, t)
+    A = []
+    D = {}
+    
+    # build constraints
+    for i in range(n):
+        x = data[i, :]
+        k = 0
+        
+        #TEMP
+        for j in I.get_nns_by_item(i, int(math.sqrt(n))):
+            if (labels[i] == labels[j]):
+                continue
+        
+            v = x - data[j, :]
+            v = np.multiply(v, v)
+
+            if (alpha is None or np.dot(alpha, v) < epsilon):
+                A.append(v)
+                k += 1
+                D[k] = D.get(k, 0) + 1
+            
+            if ((alpha is None and k == 2) or (not alpha is None and k == 1)):
+                break
+
+    print(D)
+
+    # free annoy index
+    I.unbuild()
+              
+    return np.array(A)
 
 
 def circles_example(N=30, d=5):

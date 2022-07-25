@@ -24,7 +24,7 @@ def testfunc(solver, num):
 	#method='centers'
 	redundancy=0.25
 	
-	markers = get_markers(data, labels, num_markers, method=method, redundancy=redundancy, solver=solver, max_constraints = num)
+	markers = get_markers(data, labels, num_markers, method=method, redundancy=redundancy, solver=solver, max_constraints = num, epsilon=1)
 
 	#accuracy=performance(data, labels, data, labels, clf)
 	#accuracy_markers=performance(data[:,markers], labels, data[:,markers], labels, clf)
@@ -35,6 +35,8 @@ def testfunc(solver, num):
 	return markers
 
 
-for i in [1000]:
+for i in [32898]:
 	print(i)
 	markers1 = testfunc('experimental', i)
+	markers1.sort()
+	print(markers1)
