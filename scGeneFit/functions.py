@@ -314,8 +314,8 @@ def __lp_markers_gurobi(constraints, num_markers, epsilon, warm = None):
 
 
 def __lp_markers_cutting(data, labels, num_markers, epsilon):
-    # number of genes per cell
-    d = data.shape[1] 
+    # number of calls, genes per cell
+    d = data.shape[1]
     
     # used for the removal of the constraints
     D = set([]) # stored pairs of vertices that have been added to the constraints
@@ -327,16 +327,12 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon):
         # is it the initial run?
         isFirstRun = offset == 0
     
-        # building annoy index and selecting which coordinates (dimensions) to consider
+        # building annoy index
         if (isFirstRun):
             I = __get_annoy_index(data, np.ones(d))
-            #t = range(d) 
         else:
             # considering indices with biggest alpha values
             I = __get_annoy_index(data, x)
-            #t = sorted(
-            #    range(d), key = lambda i: x[i], reverse = True
-            #)[:num_markers]
         
         if (isFirstRun):
             # in the first run, we build delta as a minimum squared distance of the 
@@ -344,8 +340,8 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon):
             delta = __get_eps(data, labels, I) * epsilon
         else:
             # TODO: in all other runs, we remove inactive constraints from the system matrix
-            # B = __prune_cutting_matrix(B, D, M, x, y, delta)
-            # offset = B.shape[0]
+            #B = __prune_cutting_matrix(B, D, M, x, y, delta)
+            #offset = B.shape[0]
             pass
         
         # debug
@@ -387,14 +383,14 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon):
         print(i + 1, "sum_beta:", sum(list(y)), "shape:", B.shape)
         
         # set to True for per-iteration performance checking
-        # prints: violated constraints, total constraints, percentage violated
         if False:
             tt = time.time()
             performance_metrics(data, labels, x, delta, num_markers, D)
             print("debugging:", time.time() - tt, "sec")
 
     # final performance checking
-    performance_metrics(data, labels, x, delta, num_markers, D)
+    if False:
+        performance_metrics(data, labels, x, delta, num_markers, D)
 
     return x
 
@@ -411,6 +407,9 @@ def __prune_cutting_matrix(B, D, M, x, y, delta):
     D = D.difference([M[i] for i in I])
     A = list(set(R).difference(I))
     M = { i : M[A[i]] for i in range(len(A)) }
+
+    # debug
+    print("pruned", B.shape[0] - len(A))
 
     return B[A, :]
     
@@ -442,9 +441,9 @@ def __get_eps(data, labels, I):
 def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta):
     # number of cells
     n, d = data.shape
-    # number of nearest neighbors to iterate over
-    nNeighbors = int(n / 2)
-    # maximum number of constraints explored per cell, keep it at 3+
+    # number of nearest neighbors to iterate over, keep it at 3+
+    nNeighbors = int(n / 4) + 1
+    # maximum number of constraints explored per cell
     nConstraints = max(3, min(int(math.log(n, 10)) + 1, 10))
     # new constraints will be stored here
     A = []
@@ -487,7 +486,7 @@ def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta):
             # and might, therefore, be slow
             if ((alpha is None and k == 1) or (not alpha is None and k == nConstraints)):
                 break
-    
+
     if (A == []):
         return None
     
@@ -499,11 +498,11 @@ def performance_metrics(data, label, alpha, delta, num_markers, D = None):
     a = 0
     b = 0
     
-    m = sorted(range(d), key = lambda i: alpha[i], reverse = True)[:num_markers]
-    alpha = alpha[m]
+    #m = sorted(range(d), key = lambda i: alpha[i], reverse = True)[:num_markers]
+    #alpha = alpha[m]
     
     for i in range(n):
-        x = data[i, m]
+        x = data[i, :]
         for j in range(i + 1, n):
             if label[i] != label[j]:
                 a += 1
@@ -511,13 +510,11 @@ def performance_metrics(data, label, alpha, delta, num_markers, D = None):
                 if (not D is None and (i, j) in D):
                     continue
                 
-                v = x - data[j, m]
+                v = x - data[j, :]
                 if (np.dot(alpha, np.multiply(v, v)) < (1 - 1e-6) * delta):
                     b += 1
-        if (i > 0 and i % 1000 == 0):
-            print(i, b, a, b / a)
     
-    print(n, b, a, b / a)
+    print("violated:", b, "total:", a, "percentage", b / a)
     
 
 
