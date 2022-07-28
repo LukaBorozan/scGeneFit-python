@@ -58,7 +58,7 @@ def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling
         t = time.time()
 
         if solver == 'gurobi':
-            x = __lp_markers_gurobi(constraints, num_markers, smallest_norm * epsilon) 
+            x, y = __lp_markers_gurobi(constraints, num_markers, smallest_norm * epsilon) 
         elif solver == 'scipy':
             sol = __lp_markers(constraints, num_markers, smallest_norm * epsilon)
             x = sol['x'][0:d]
@@ -249,6 +249,8 @@ def __lp_markers(constraints, num_markers, epsilon):
     return sol
     
 
+# gurobi solver takes constraints, desired number of markers and tolerance,
+# returns (alpha, beta) solution to the LP
 def __lp_markers_gurobi(constraints, num_markers, epsilon):
     M = gp.Model("whatever_bro")
     M.setParam('OutputFlag', 0) 
@@ -303,108 +305,206 @@ def __lp_markers_gurobi(constraints, num_markers, epsilon):
     # optimize
     M.optimize()
 
-    print("sum beta ", sum(list(x[d : len(x.X)].X)))
-
-    # return alphas
-    # return np.array([p.X for p in M.getVars()[0 : d]])
-    return np.array(x[0 : d].X)
+    # return alphas, betas
+    return np.array(x[:d].X), np.array(x[d:].X)
 
 
 def __lp_markers_cutting(data, labels, num_markers, epsilon):
-    epsilon = __get_eps(data, labels) * epsilon
-    d = data.shape[1]
-    x = None
-    B = np.zeros(1)
+    # number of genes per cell
+    d = data.shape[1] 
+    
+    # used for the removal of the constraints
+    D = set([]) # stored pairs of vertices that have been added to the constraints
+    offset = 0  # index tracker for the pairs of vertices
+    M = {}      # maps indices into pairs
 
-    for i in range(99999):
-        A = __get_cutting_constraints(data, labels, x, epsilon)
+    # main loop
+    for i in range(3):
+        # is it the initial run?
+        isFirstRun = offset == 0
+    
+        # building annoy index and selecting which coordinates (dimensions) to consider
+        if (isFirstRun):
+            # considering all indices
+            t = range(d) 
+        else:
+            # considering indices with biggest alpha values
+            t = sorted(
+                range(d), key = lambda i: x[i], reverse = True
+            )[:num_markers]
         
-        if (len(A) == 0):
+        I = __get_annoy_index(data, t)
+        
+        if (isFirstRun):
+            # in the first run, we build delta as a minimum squared distance of the 
+            # nearest neighbors of all cells
+            delta = __get_eps(data, labels, I) * epsilon
+        else:
+            # TODO: in all other runs, we remove inactive constraints from the system matrix
+            # B = __prune_cutting_matrix(B, D, M, x, y, delta)
+            # offset = B.shape[0]
+            pass
+        
+        # debug
+        tt = time.time()
+        
+        # building new constraints here
+        if (isFirstRun):
+            A = __get_cutting_constraints(data, labels, None, I, D, M, offset, delta, t)
+        else:
+            A = __get_cutting_constraints(data, labels, x, I, D, M, offset, delta, t)
+        
+        # releasing annoy index
+        I.unbuild() 
+        
+        # if there are no new constraints to add, we consider the iterations successful
+        if (A is None):
             break
-        
-        if (len(B) == 1):
+            
+        if (isFirstRun):
             B = A
         else:
+            # appending new constraints to the previous ones and updating the offset
             B = np.concatenate((B, A))
         
-        x = __lp_markers_gurobi(-B, num_markers, epsilon) 
-        print(i + 1, B.shape)
+        offset = B.shape[0]
         
+        # debug
+        print("cons:", time.time() - tt)
+        tt = time.time()
+        
+        # solving the model, -B is passed for legacy reasons
+        # TODO: warm start the LP
+        x, y = __lp_markers_gurobi(-B, num_markers, delta) 
+        
+        # debug, can delete later
+        print("solving:", time.time() - tt)
+        tt = time.time()
+        print(i + 1, "sum_beta:", sum(list(y)), "shape:", B.shape)
+        performance_metrics(data, labels, x, delta, num_markers, D)
+        print("debugging:", time.time() - tt)
+
     return x
 
 
-# sum beta  5710.87870464862
+# removes inactive constraints, updates B, D and M
+def __prune_cutting_matrix(B, D, M, x, y, delta):
+    R = range(B.shape[0])
 
-# [0, 14, 16, 32, 55, 94, 116, 119, 125, 144, 157, 162, 176, 180, 183, 199, 208, 211, 212, 215, 225, 267, 270, 376, 492]
+    I = [
+        i for i in R
+        if np.dot(B[i, :], x) + y[i] >= 1.01 * delta
+    ]
+    
+    D = D.difference([M[i] for i in I])
+    A = list(set(R).difference(I))
+    M = { i : M[A[i]] for i in range(len(A)) }
 
+    return B[A, :]
+    
+
+# builds a new annoy index for the selected dimensions
 def __get_annoy_index(data, indices):
-    I = AnnoyIndex(len(indices), 'euclidean')
-    n = data.shape[0]
-    
-    for i in range(n - 1, 0, -1):
-        I.add_item(i, data[i, indices])
-        
+    I = AnnoyIndex(len(indices), 'euclidean')   
+    for i in range(data.shape[0] - 1, 0, -1):
+        I.add_item(i, data[i, indices]) 
     I.build(10)
-    
     return I
     
 
-def __get_eps(data, labels):
+# calculates the smallest nonzero distance between cells with different labels
+# and squares it to be used as delta
+def __get_eps(data, labels, I):
+    return min([
+        v
+        for j in range(data.shape[0])
+        for i in I.get_nns_by_item(j, 10)
+        for v in [np.linalg.norm(data[j, :] - data[i, :])]
+        if v > 5e-12 and labels[i] != labels[j]
+    ]) ** 2
+
+
+# TODO: vectorize? sparsify?
+def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta, t):
+    # number of cells
     n, d = data.shape
-    I = __get_annoy_index(data, range(d))
-
-    # 
-    q = min([
-        np.linalg.norm(data[j] - data[i])
-        for j in range(n)
-        for i in [I.get_nns_by_item(j, 2)[1]]
-    ])
-    
-    I.unbuild()
-
-    return q * q
-    
-
-def __get_cutting_constraints(data, labels, alpha, epsilon):
-    # create annoy index
-    n, d = data.shape  
-
-    if (alpha is None):
-        t = list(range(d))
-    else:
-        t = [i for i in range(d) if alpha[i] > 5e-12]
-        
-    I = __get_annoy_index(data, t)
+    # number of nearest neighbors to iterate over
+    nNeighbors = n
+    # maximum number of constraints explored per cell, keep it at 3+
+    nConstraints = max(3, min(int(math.log(n, 10)) + 1, 10))
+    # new constraints will be stored here
     A = []
-    D = {}
     
-    # build constraints
+    # introduce constraints to A, but only if they were violated in the previous iteration
+    # if its the first iteration
+    # considering pairs of cells (i, j) for all cells i and its m nearest neighbors
     for i in range(n):
         x = data[i, :]
         k = 0
         
-        #TEMP
-        for j in I.get_nns_by_item(i, int(math.sqrt(n))):
+        for j in I.get_nns_by_item(i, nNeighbors):
+            # do not consider cells that have the same label
             if (labels[i] == labels[j]):
                 continue
         
+            # only consider constraints that we haven't added yet
+            a = min(i, j)
+            b = max(i, j)
+            
+            if ((a, b) in D):
+                continue
+        
+            # a constraint of form alpha * (xi - xj)^2
             v = x - data[j, :]
             v = np.multiply(v, v)
 
-            if (alpha is None or np.dot(alpha, v) < epsilon):
+            if (alpha is None or np.dot(alpha[t], v[t]) < delta):
+                D.add((a, b))
+                M[offset] = (a, b)
+                offset += 1
                 A.append(v)
                 k += 1
-                D[k] = D.get(k, 0) + 1
-            
-            if ((alpha is None and k == 2) or (not alpha is None and k == 1)):
+            else:
+                # nearest neighbors (j's) are sorted, it is safe to break
                 break
-
-    print(D)
-
-    # free annoy index
-    I.unbuild()
-              
+            
+            # add X constraints in the first iteration and Y during every other
+            # this distinction is made because the initial iteration considers full dimension
+            # and might, therefore, be slow
+            if ((alpha is None and k == 1) or (not alpha is None and k == nConstraints)):
+                break
+    
+    if (A == []):
+        return None
+    
     return np.array(A)
+
+
+def performance_metrics(data, label, alpha, delta, num_markers, D = None):
+    n, d = data.shape
+    a = 0
+    b = 0
+    
+    m = sorted(range(d), key = lambda i: alpha[i], reverse = True)[:num_markers]
+    alpha = alpha[m]
+    
+    for i in range(n):
+        x = data[i, m]
+        for j in range(i + 1, n):
+            if label[i] != label[j]:
+                a += 1
+                
+                if (not D is None and (i, j) in D):
+                    continue
+                
+                v = x - data[j, m]
+                if (np.dot(alpha, np.multiply(v, v)) < (1 - 1e-6) * delta):
+                    b += 1
+        if (i > 0 and i % 1000 == 0):
+            print(i, b, a, b / a)
+    
+    print(b, a, b / a)
+    
 
 
 def circles_example(N=30, d=5):

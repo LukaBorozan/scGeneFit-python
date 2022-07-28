@@ -34,9 +34,16 @@ def testfunc(solver, num):
 	
 	return markers
 
-
-for i in [32898]:
+for i in [34073]:
 	print(i)
 	markers1 = testfunc('experimental', i)
 	markers1.sort()
 	print(markers1)
+
+# data[:870]
+
+# experimental
+# constraints to ~optimum - 35028, / 229241 constraints, 18 constraints left (~0.008%)
+
+# gurobi/scipy
+# for 34073 another 33760 are violated
