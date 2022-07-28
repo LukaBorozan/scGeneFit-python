@@ -251,7 +251,7 @@ def __lp_markers(constraints, num_markers, epsilon):
 
 # gurobi solver takes constraints, desired number of markers and tolerance,
 # returns (alpha, beta) solution to the LP
-def __lp_markers_gurobi(constraints, num_markers, epsilon):
+def __lp_markers_gurobi(constraints, num_markers, epsilon, warm = None):
     M = gp.Model("whatever_bro")
     M.setParam('OutputFlag', 0) 
     m, d = constraints.shape
@@ -263,6 +263,10 @@ def __lp_markers_gurobi(constraints, num_markers, epsilon):
     ))
     
     x = M.addMVar(shape = d + m, vtype = GRB.CONTINUOUS, ub = u)
+    
+    # warm start if can
+    if (not warm is None):
+        x.Start = np.concatenate((warm, np.zeros(m)))
     
     # objective function
     c = np.concatenate((
@@ -319,21 +323,20 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon):
     M = {}      # maps indices into pairs
 
     # main loop
-    for i in range(3):
+    for i in range(100):
         # is it the initial run?
         isFirstRun = offset == 0
     
         # building annoy index and selecting which coordinates (dimensions) to consider
         if (isFirstRun):
-            # considering all indices
-            t = range(d) 
+            I = __get_annoy_index(data, np.ones(d))
+            #t = range(d) 
         else:
             # considering indices with biggest alpha values
-            t = sorted(
-                range(d), key = lambda i: x[i], reverse = True
-            )[:num_markers]
-        
-        I = __get_annoy_index(data, t)
+            I = __get_annoy_index(data, x)
+            #t = sorted(
+            #    range(d), key = lambda i: x[i], reverse = True
+            #)[:num_markers]
         
         if (isFirstRun):
             # in the first run, we build delta as a minimum squared distance of the 
@@ -350,9 +353,9 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon):
         
         # building new constraints here
         if (isFirstRun):
-            A = __get_cutting_constraints(data, labels, None, I, D, M, offset, delta, t)
+            A = __get_cutting_constraints(data, labels, None, I, D, M, offset, delta)
         else:
-            A = __get_cutting_constraints(data, labels, x, I, D, M, offset, delta, t)
+            A = __get_cutting_constraints(data, labels, x, I, D, M, offset, delta)
         
         # releasing annoy index
         I.unbuild() 
@@ -370,19 +373,28 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon):
         offset = B.shape[0]
         
         # debug
-        print("cons:", time.time() - tt)
+        print("cons:", time.time() - tt, "sec")
         tt = time.time()
         
         # solving the model, -B is passed for legacy reasons
-        # TODO: warm start the LP
-        x, y = __lp_markers_gurobi(-B, num_markers, delta) 
+        if (isFirstRun):
+            x, y = __lp_markers_gurobi(-B, num_markers, delta) 
+        else:
+            x, y = __lp_markers_gurobi(-B, num_markers, delta, x)
         
         # debug, can delete later
-        print("solving:", time.time() - tt)
-        tt = time.time()
+        print("solving:", time.time() - tt, "sec")
         print(i + 1, "sum_beta:", sum(list(y)), "shape:", B.shape)
-        performance_metrics(data, labels, x, delta, num_markers, D)
-        print("debugging:", time.time() - tt)
+        
+        # set to True for per-iteration performance checking
+        # prints: violated constraints, total constraints, percentage violated
+        if False:
+            tt = time.time()
+            performance_metrics(data, labels, x, delta, num_markers, D)
+            print("debugging:", time.time() - tt, "sec")
+
+    # final performance checking
+    performance_metrics(data, labels, x, delta, num_markers, D)
 
     return x
 
@@ -393,7 +405,7 @@ def __prune_cutting_matrix(B, D, M, x, y, delta):
 
     I = [
         i for i in R
-        if np.dot(B[i, :], x) + y[i] >= 1.01 * delta
+        if np.dot(B[i, :], x) + y[i] >= (1 + 1e-6) * delta
     ]
     
     D = D.difference([M[i] for i in I])
@@ -404,10 +416,12 @@ def __prune_cutting_matrix(B, D, M, x, y, delta):
     
 
 # builds a new annoy index for the selected dimensions
-def __get_annoy_index(data, indices):
-    I = AnnoyIndex(len(indices), 'euclidean')   
-    for i in range(data.shape[0] - 1, 0, -1):
-        I.add_item(i, data[i, indices]) 
+def __get_annoy_index(data, alpha):
+    n, d = data.shape
+    I = AnnoyIndex(d, 'euclidean')
+    for i in range(n - 1, 0, -1):
+        v = data[i, :]
+        I.add_item(i, np.multiply(alpha, v, v)) 
     I.build(10)
     return I
     
@@ -425,11 +439,11 @@ def __get_eps(data, labels, I):
 
 
 # TODO: vectorize? sparsify?
-def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta, t):
+def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta):
     # number of cells
     n, d = data.shape
     # number of nearest neighbors to iterate over
-    nNeighbors = n
+    nNeighbors = int(n / 2)
     # maximum number of constraints explored per cell, keep it at 3+
     nConstraints = max(3, min(int(math.log(n, 10)) + 1, 10))
     # new constraints will be stored here
@@ -458,7 +472,7 @@ def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta, t):
             v = x - data[j, :]
             v = np.multiply(v, v)
 
-            if (alpha is None or np.dot(alpha[t], v[t]) < delta):
+            if (alpha is None or np.dot(alpha, v) < delta):
                 D.add((a, b))
                 M[offset] = (a, b)
                 offset += 1
@@ -503,7 +517,7 @@ def performance_metrics(data, label, alpha, delta, num_markers, D = None):
         if (i > 0 and i % 1000 == 0):
             print(i, b, a, b / a)
     
-    print(b, a, b / a)
+    print(n, b, a, b / a)
     
 
 
