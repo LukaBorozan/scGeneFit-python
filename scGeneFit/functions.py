@@ -323,7 +323,7 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon):
     M = {}      # maps indices into pairs
 
     # main loop
-    for i in range(100):
+    for i in range(10000):
         # is it the initial run?
         isFirstRun = offset == 0
     
@@ -380,8 +380,11 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon):
         
         # debug, can delete later
         print("solving:", time.time() - tt, "sec")
-        print(i + 1, "sum_beta:", sum(list(y)), "shape:", B.shape)
-        
+        print(i + 1, "sum_beta:", sum(list(y)), "shape:", B.shape, flush = True)
+       
+        zz = [(i, x[i]) for i in range(d) if x[i] > 5e-12] 
+        print(len(zz), zz)
+
         # set to True for per-iteration performance checking
         if False:
             tt = time.time()
@@ -389,7 +392,7 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon):
             print("debugging:", time.time() - tt, "sec")
 
     # final performance checking
-    if False:
+    if True:
         performance_metrics(data, labels, x, delta, num_markers, D)
 
     return x
@@ -442,7 +445,7 @@ def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta):
     # number of cells
     n, d = data.shape
     # number of nearest neighbors to iterate over, keep it at 3+
-    nNeighbors = int(n / 4) + 1
+    nNeighbors = n #int(n / 4) + 1
     # maximum number of constraints explored per cell
     nConstraints = max(3, min(int(math.log(n, 10)) + 1, 10))
     # new constraints will be stored here
@@ -457,14 +460,7 @@ def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta):
         
         for j in I.get_nns_by_item(i, nNeighbors):
             # do not consider cells that have the same label
-            if (labels[i] == labels[j]):
-                continue
-        
-            # only consider constraints that we haven't added yet
-            a = min(i, j)
-            b = max(i, j)
-            
-            if ((a, b) in D):
+            if (i > j or labels[i] == labels[j] or (i, j) in D):
                 continue
         
             # a constraint of form alpha * (xi - xj)^2
@@ -472,8 +468,8 @@ def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta):
             v = np.multiply(v, v)
 
             if (alpha is None or np.dot(alpha, v) < delta):
-                D.add((a, b))
-                M[offset] = (a, b)
+                D.add((i, j))
+                M[offset] = (i, j)
                 offset += 1
                 A.append(v)
                 k += 1
