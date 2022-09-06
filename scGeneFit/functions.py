@@ -13,7 +13,7 @@ from annoy import AnnoyIndex
 import sys
 import math
 
-def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling_rate=1, n_neighbors=3, max_constraints=1000, redundancy=0.01, verbose=True, solver='gurobi'):
+def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling_rate=1, n_neighbors=3, max_constraints=1000, redundancy=0.01, verbose=True, solver='gurobi', fixed_genes = {}):
     """marker selection algorithm
     data: Nxd numpy array with point coordinates, N: number of points, d: dimension
     labels: list with labels (N labels, one per point)
@@ -58,7 +58,7 @@ def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling
         t = time.time()
 
         if solver == 'gurobi':
-            x, y = __lp_markers_gurobi(constraints, num_markers, smallest_norm * epsilon) 
+            x, y = __lp_markers_gurobi(constraints, num_markers, smallest_norm * epsilon, fixed_genes) 
         elif solver == 'scipy':
             sol = __lp_markers(constraints, num_markers, smallest_norm * epsilon)
             x = sol['x'][0:d]
@@ -67,7 +67,7 @@ def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling
     	    return []
     else:
     	t = time.time()
-    	x = __lp_markers_cutting(data, labels, num_markers, epsilon) 
+    	x = __lp_markers_cutting(data, labels, num_markers, epsilon, fixed_genes) 
       
     if verbose:
         print('Time elapsed: {} seconds'.format(time.time() - t))
@@ -251,18 +251,24 @@ def __lp_markers(constraints, num_markers, epsilon):
 
 # gurobi solver takes constraints, desired number of markers and tolerance,
 # returns (alpha, beta) solution to the LP
-def __lp_markers_gurobi(constraints, num_markers, epsilon, warm = None):
+def __lp_markers_gurobi(constraints, num_markers, epsilon, fixed, warm = None):
     M = gp.Model("whatever_bro")
     M.setParam('OutputFlag', 0) 
     m, d = constraints.shape
 
     # create vars
     u = np.concatenate((
-        np.ones(d),
+        np.array(
+            [fixed.get(i, 1) for i in range(d)]
+        ),
         float('inf') * np.ones(m)
     ))
+
+    l = np.array(
+       [fixed.get(i, 0) for i in range(d + m)]
+    )
     
-    x = M.addMVar(shape = d + m, vtype = GRB.CONTINUOUS, ub = u)
+    x = M.addMVar(shape = d + m, vtype = GRB.CONTINUOUS, ub = u, lb = l)
     
     # warm start if can
     if (not warm is None):
@@ -313,7 +319,7 @@ def __lp_markers_gurobi(constraints, num_markers, epsilon, warm = None):
     return np.array(x[:d].X), np.array(x[d:].X)
 
 
-def __lp_markers_cutting(data, labels, num_markers, epsilon):
+def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed):
     # number of calls, genes per cell
     d = data.shape[1]
     
@@ -374,9 +380,9 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon):
         
         # solving the model, -B is passed for legacy reasons
         if (isFirstRun):
-            x, y = __lp_markers_gurobi(-B, num_markers, delta) 
+            x, y = __lp_markers_gurobi(-B, num_markers, delta, fixed) 
         else:
-            x, y = __lp_markers_gurobi(-B, num_markers, delta, x)
+            x, y = __lp_markers_gurobi(-B, num_markers, delta, fixed, x)
         
         # debug, can delete later
         print("solving:", time.time() - tt, "sec")
@@ -447,7 +453,7 @@ def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta):
     # number of nearest neighbors to iterate over, keep it at 3+
     nNeighbors = n #int(n / 4) + 1
     # maximum number of constraints explored per cell
-    nConstraints = max(3, min(int(math.log(n, 10)) + 1, 10))
+    nConstraints = 20 # max(3, min(int(math.log(n, 10)) + 1, 10))
     # new constraints will be stored here
     A = []
     
