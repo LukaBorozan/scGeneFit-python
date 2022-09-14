@@ -327,9 +327,12 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed):
     D = set([]) # stored pairs of vertices that have been added to the constraints
     offset = 0  # index tracker for the pairs of vertices
     M = {}      # maps indices into pairs
+    prev = []   # previous iteration
 
     # main loop
     for i in range(10000):
+        print("iteration:", i + 1)
+
         # is it the initial run?
         isFirstRun = offset == 0
     
@@ -375,7 +378,7 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed):
         offset = B.shape[0]
         
         # debug
-        print("cons:", time.time() - tt, "sec")
+        print("cons:", "{:.2f}".format(time.time() - tt), "sec")
         tt = time.time()
         
         # solving the model, -B is passed for legacy reasons
@@ -385,11 +388,18 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed):
             x, y = __lp_markers_gurobi(-B, num_markers, delta, fixed, x)
         
         # debug, can delete later
-        print("solving:", time.time() - tt, "sec")
-        print(i + 1, "sum_beta:", sum(list(y)), "shape:", B.shape, flush = True)
+        print("shape:", B.shape, flush = True)
+        print("solving:", "{:.2f}".format(time.time() - tt), "sec")
+        # print(i + 1, "sum_beta:", sum(list(y)), "shape:", B.shape, flush = True)
        
-        zz = [(i, x[i]) for i in range(d) if x[i] > 5e-12] 
-        print(len(zz), zz)
+		# current iteration
+        if (prev != [] and np.array_equal(prev, x)):
+            break
+        else:
+            prev = x
+
+        # zz = [(i, x[i]) for i in range(d) if x[i] > 5e-12] 
+        # print(len(zz), zz)
 
         # set to True for per-iteration performance checking
         if False:
@@ -398,7 +408,7 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed):
             print("debugging:", time.time() - tt, "sec")
 
     # final performance checking
-    if True:
+    if False:
         performance_metrics(data, labels, x, delta, num_markers, D)
 
     return x
@@ -451,9 +461,9 @@ def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta):
     # number of cells
     n, d = data.shape
     # number of nearest neighbors to iterate over, keep it at 3+
-    nNeighbors = n #int(n / 4) + 1
+    nNeighbors = int(n / 8) + 1
     # maximum number of constraints explored per cell
-    nConstraints = 20 # max(3, min(int(math.log(n, 10)) + 1, 10))
+    nConstraints = 10 # max(3, min(int(math.log(n, 10)) + 1, 10))
     # new constraints will be stored here
     A = []
     
