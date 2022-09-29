@@ -67,7 +67,7 @@ def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling
     	    return []
     else:
     	t = time.time()
-    	x = __lp_markers_cutting(data, labels, num_markers, epsilon, fixed_genes) 
+    	x = __lp_markers_cutting(data, labels, num_markers, epsilon, fixed_genes, verbose) 
       
     if verbose:
         print('Time elapsed: {} seconds'.format(time.time() - t))
@@ -319,7 +319,7 @@ def __lp_markers_gurobi(constraints, num_markers, epsilon, fixed, warm = None):
     return np.array(x[:d].X), np.array(x[d:].X)
 
 
-def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed):
+def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed, verbose):
     # number of calls, genes per cell
     d = data.shape[1]
     
@@ -331,7 +331,8 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed):
 
     # main loop
     for i in range(10000):
-        print("iteration:", i + 1)
+        if verbose:
+            print("iteration:", i + 1)
 
         # is it the initial run?
         isFirstRun = offset == 0
@@ -378,7 +379,8 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed):
         offset = B.shape[0]
         
         # debug
-        print("cons:", "{:.2f}".format(time.time() - tt), "sec")
+        if verbose:
+            print("cons:", "{:.2f}".format(time.time() - tt), "sec")
         tt = time.time()
         
         # solving the model, -B is passed for legacy reasons
@@ -388,8 +390,9 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed):
             x, y = __lp_markers_gurobi(-B, num_markers, delta, fixed, x)
         
         # debug, can delete later
-        print("shape:", B.shape, flush = True)
-        print("solving:", "{:.2f}".format(time.time() - tt), "sec")
+        if verbose:
+            print("shape:", B.shape, flush = True)
+            print("solving:", "{:.2f}".format(time.time() - tt), "sec")
         # print(i + 1, "sum_beta:", sum(list(y)), "shape:", B.shape, flush = True)
        
 		# current iteration
@@ -450,7 +453,7 @@ def __get_eps(data, labels, I):
     return min([
         v
         for j in range(data.shape[0])
-        for i in I.get_nns_by_item(j, 10)
+        for i in I.get_nns_by_item(j, 20)
         for v in [np.linalg.norm(data[j, :] - data[i, :])]
         if v > 5e-12 and labels[i] != labels[j]
     ]) ** 2
@@ -461,7 +464,7 @@ def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta):
     # number of cells
     n, d = data.shape
     # number of nearest neighbors to iterate over, keep it at 3+
-    nNeighbors = int(n / 8) + 1
+    nNeighbors = min(int(n / 8) + 1, 20)
     # maximum number of constraints explored per cell
     nConstraints = 10 # max(3, min(int(math.log(n, 10)) + 1, 10))
     # new constraints will be stored here
@@ -619,19 +622,19 @@ def one_vs_all_selection(data, labels, num_bins=20):
     return markers
 
 
-def optimize_epsilon(data_train, labels_train, data_test, labels_test, num_markers, method='centers', fixed_parameters={}, bounds=[(0.2 , 10)], x0=[1], max_fun_evaluations=20, n_experiments=5, clf=None, hierarchy=False, verbose=True):
+def optimize_epsilon(data_train, labels_train, data_test, labels_test, num_markers, method='centers', solver='experimental', fixed_parameters={}, bounds=[(0.2 , 10)], x0=[1], max_fun_evaluations=20, n_experiments=5, clf=None, hierarchy=False, verbose=True):
     """
     Finds the optimal value of epsilon using scipy.optimize.dual_annealing
     """
     if clf==None:
         clf=sklearn.neighbors.NearestCentroid()
-    Instance=__ScGeneInstance(data_train, labels_train, data_test, labels_test, clf, num_markers, method, fixed_parameters, n_experiments, hierarchy)
+    Instance=__ScGeneInstance(data_train, labels_train, data_test, labels_test, clf, num_markers, method, fixed_parameters, n_experiments, hierarchy, solver)
     print('Optimizing epsilon for', num_markers, 'markers and', method, 'method.')
     res = scipy.optimize.dual_annealing(Instance.error_epsilon, bounds=bounds, x0=x0,  maxfun=max_fun_evaluations, no_local_search=True)
     return [res.x, 1-res.fun]    
 
 class __ScGeneInstance:
-    def __init__(self, X_train, y_train, X_test, y_test, clf, num_markers, method, fixed_parameters, n_experiments, hierarchy):
+    def __init__(self, X_train, y_train, X_test, y_test, clf, num_markers, method, fixed_parameters, n_experiments, hierarchy, solver):
         self.X_train=X_train
         self.y_train=y_train
         self.X_test=X_test
@@ -642,6 +645,7 @@ class __ScGeneInstance:
         self.fixed_parameters=fixed_parameters
         self.n_experiments=n_experiments
         self.hierarchy=hierarchy
+        self.solver=solver
     def error_epsilon(self, epsilon):
         return 1-self.accuracy(epsilon)
 
@@ -650,7 +654,7 @@ class __ScGeneInstance:
         if self.hierarchy:
             markers=[get_markers_hierarchy(self.X_train, self.y_train, self.num_markers, self.method, epsilon=epsilon, verbose=False, **self.fixed_parameters) for i in range(self.n_experiments)]
         else:    
-            markers=[get_markers(self.X_train, self.y_train, self.num_markers, self.method, epsilon=epsilon, verbose=False, **self.fixed_parameters) for i in range(self.n_experiments)]
+            markers=[get_markers(self.X_train, self.y_train, self.num_markers, self.method, solver=self.solver, epsilon=epsilon, verbose=False, **self.fixed_parameters) for i in range(self.n_experiments)]
         val=[self.performance( markers[i] ) for i in range(self.n_experiments)]
         return np.mean(val)
     

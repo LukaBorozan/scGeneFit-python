@@ -1,6 +1,10 @@
+# python3.7
 from scGeneFit.functions import *
 
 import numpy as np
+#import pandas as pd
+import scanpy as sc
+#import anndata as ad
 
 
 np.random.seed(0) 
@@ -13,22 +17,41 @@ def performance(X_train, y_train, X_test, y_test, clf):
     return clf.score(X_test, y_test)
 
 # 13 cell types
-def testfunc(solver, num, fixed_genes = {}):
+def testfunc(solver, num, fixed_genes = {}, optEps = False):
+        
+        if True:
+            adata = sc.read_h5ad('../data/260722_MOp_matrix_working_merged_neurons_only.h5ad')
+            adata.var_names_make_unique()
+            adata.layers['scaled'] = sc.pp.scale(adata, copy=True).X
+            adata.var_names_make_unique()
+            sc.pp.filter_genes(adata, min_cells=50) 
+            sc.pp.normalize_total(adata, target_sum=1e4)
+            sc.pp.log1p(adata)
+            sc.pp.highly_variable_genes(adata, n_top_genes = 500) #15000
+            adata = adata[:, adata.var.highly_variable]
+            data = adata.X
+            labels = adata.obs['cluster_label'].astype('category').cat.codes.to_numpy()
+
         #load data from files
-        [data, labels, names]= load_example_data("CITEseq")
-        #[data, labels, names]= load_example_data("zeisel")
+        if False:
+            [data, labels, names]= load_example_data("CITEseq") #ziesel
+
         N,d=data.shape
 
         num_markers=25
-        method='pairwise'
-        #method='centers'
+        method='pairwise' #centers
         redundancy=0.25
         
-        #samples, samples_labels, idx = sample(data, labels, 0.25)
-        #eps = optimize_epsilon(np.array(samples), np.array(samples_labels), np.array(data), np.array(labels), num_markers=num_markers, method=method)
-        #print(eps)       
+        print("data shape:", N, d, flush=True)
 
-        eps = 1.14450351
+        if optEps:
+                samples, samples_labels, idx = sample(data, labels, 0.25)
+                eps = optimize_epsilon(np.array(samples), np.array(samples_labels), np.array(data), np.array(labels), num_markers=num_markers, method=method, solver='experimental')
+                print("epsilon:", eps[0])       
+                eps = eps[0][0]
+        else:
+                eps = 1
+        
         markers = get_markers(data, labels, num_markers, method=method, redundancy=redundancy, solver=solver, max_constraints=num, epsilon=eps, fixed_genes=fixed_genes)
 
         #accuracy=performance(data, labels, data, labels, clf)
