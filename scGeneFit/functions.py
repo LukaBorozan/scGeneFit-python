@@ -336,6 +336,9 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed, verbose):
 
         # is it the initial run?
         isFirstRun = offset == 0
+
+        # debug
+        tt = time.time()
     
         # building annoy index
         if (isFirstRun):
@@ -355,6 +358,8 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed, verbose):
             pass
         
         # debug
+        if verbose:
+            print("index:", "{:.2f}".format(time.time() - tt), "sec")
         tt = time.time()
         
         # building new constraints here
@@ -391,8 +396,7 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed, verbose):
         
         # debug, can delete later
         if verbose:
-            print("shape:", B.shape, flush = True)
-            print("solving:", "{:.2f}".format(time.time() - tt), "sec")
+            print("solving:", B.shape, "{:.2f}".format(time.time() - tt), "sec", flush = True)
         # print(i + 1, "sum_beta:", sum(list(y)), "shape:", B.shape, flush = True)
        
 		# current iteration
@@ -401,8 +405,8 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed, verbose):
         else:
             prev = x
 
-        # zz = [(i, x[i]) for i in range(d) if x[i] > 5e-12] 
-        # print(len(zz), zz)
+        #zz = [(i, x[i]) for i in range(d) if x[i] > 5e-12] 
+        #print(len(zz), zz)
 
         # set to True for per-iteration performance checking
         if False:
@@ -438,12 +442,32 @@ def __prune_cutting_matrix(B, D, M, x, y, delta):
 
 # builds a new annoy index for the selected dimensions
 def __get_annoy_index(data, alpha):
+    x = [i for i in range(len(alpha)) if alpha[i] > 5e-12]
+    n = data.shape[0]
+    d = len(x)
+    a = alpha[x]
+
+    I = AnnoyIndex(d, 'euclidean')
+    I.set_seed(0)
+    for i in range(n - 1, -1, -1):
+        v = data[i, x]
+        v = np.multiply(a, v, v)
+        I.add_item(i, v)
+    I.build(10, n_jobs = -1)
+
+    return I
+
+
+# builds a new annoy index for all coordinates
+def __get_annoy_index_full_dimension(data, alpha):
     n, d = data.shape
     I = AnnoyIndex(d, 'euclidean')
-    for i in range(n - 1, 0, -1):
+    I.set_seed(0)
+    for i in range(n - 1, -1, -1):
         v = data[i, :]
-        I.add_item(i, np.multiply(alpha, v, v)) 
-    I.build(10)
+        v = np.multiply(alpha, v, v)
+        I.add_item(i, v) 
+    I.build(10, n_jobs = -1)
     return I
     
 
@@ -461,12 +485,17 @@ def __get_eps(data, labels, I):
 
 # TODO: vectorize? sparsify?
 def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta):
+    isFirstRun = alpha is None
+
     # number of cells
     n, d = data.shape
     # number of nearest neighbors to iterate over, keep it at 3+
-    nNeighbors = min(int(n / 8) + 1, 20)
+    nNeighbors = 20 # min(int(n / 8) + 1, 20)
     # maximum number of constraints explored per cell
-    nConstraints = 10 # max(3, min(int(math.log(n, 10)) + 1, 10))
+    if isFirstRun:
+    	nConstraints = 10 # max(3, min(int(math.log(n, 10)) + 1, 10))
+    else:
+        nConstraints = 1
     # new constraints will be stored here
     A = []
     
@@ -474,19 +503,23 @@ def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta):
     # if its the first iteration
     # considering pairs of cells (i, j) for all cells i and its m nearest neighbors
     for i in range(n):
+        nns = I.get_nns_by_item(i, nNeighbors)
         x = data[i, :]
         k = 0
         
-        for j in I.get_nns_by_item(i, nNeighbors):
+        for j in nns:
             # do not consider cells that have the same label
-            if (i > j or labels[i] == labels[j] or (i, j) in D):
+            if (i >= j or labels[i] == labels[j] or (i, j) in D):
                 continue
         
             # a constraint of form alpha * (xi - xj)^2
             v = x - data[j, :]
             v = np.multiply(v, v)
 
-            if (alpha is None or np.dot(alpha, v) < delta):
+            if (np.linalg.norm(v) < 0.8 * delta):
+                continue
+
+            if (isFirstRun or np.dot(alpha, v) < delta):
                 D.add((i, j))
                 M[offset] = (i, j)
                 offset += 1
@@ -499,7 +532,7 @@ def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta):
             # add X constraints in the first iteration and Y during every other
             # this distinction is made because the initial iteration considers full dimension
             # and might, therefore, be slow
-            if ((alpha is None and k == 1) or (not alpha is None and k == nConstraints)):
+            if k == nConstraints:
                 break
 
     if (A == []):
@@ -512,9 +545,6 @@ def performance_metrics(data, label, alpha, delta, num_markers, D = None):
     n, d = data.shape
     a = 0
     b = 0
-    
-    #m = sorted(range(d), key = lambda i: alpha[i], reverse = True)[:num_markers]
-    #alpha = alpha[m]
     
     for i in range(n):
         x = data[i, :]
