@@ -19,7 +19,7 @@ def performance(X_train, y_train, X_test, y_test, clf):
 # 13 cell types
 def testfunc(solver, num, fixed_genes = {}, optEps = False):
         
-        if False:
+        if True:
             adata = sc.read_h5ad('../data/260722_MOp_matrix_working_merged_neurons_only.h5ad')
             adata.var_names_make_unique()
             adata.layers['scaled'] = sc.pp.scale(adata, copy=True).X
@@ -27,18 +27,20 @@ def testfunc(solver, num, fixed_genes = {}, optEps = False):
             sc.pp.filter_genes(adata, min_cells=50) 
             sc.pp.normalize_total(adata, target_sum=1e4)
             sc.pp.log1p(adata)
-            sc.pp.highly_variable_genes(adata, n_top_genes = 500) #15000
+            sc.pp.highly_variable_genes(adata, n_top_genes = 10000) #15000
             adata = adata[:, adata.var.highly_variable]
             data = adata.X
             labels = adata.obs['cluster_label'].astype('category').cat.codes.to_numpy()
+            num_markers=140
 
         #load data from files
-        if True:
+        if False:
             [data, labels, names]= load_example_data("CITEseq") #ziesel
+            num_markers=25
 
         N,d=data.shape
 
-        num_markers=25
+        
         method='pairwise' #centers
         redundancy=0.25
         
@@ -50,7 +52,7 @@ def testfunc(solver, num, fixed_genes = {}, optEps = False):
                 print("epsilon:", eps[0])       
                 eps = eps[0][0]
         else:
-                eps = 1
+                eps = 0.1
         
         markers = get_markers(data, labels, num_markers, method=method, redundancy=redundancy, solver=solver, max_constraints=num, epsilon=eps, fixed_genes=fixed_genes)
 
