@@ -1,14 +1,10 @@
 # python3.7
 from scGeneFit.functions import *
-
 import numpy as np
 import scanpy as sc
-
 np.random.seed(0)
-
 from sklearn.neighbors import NearestCentroid
 clf = NearestCentroid()
-
 def performance(X_train, y_train, X_test, y_test, clf):
     clf.fit(X_train, y_train)
     return clf.score(X_test, y_test)
@@ -20,7 +16,7 @@ def get_data(filename):
     return data, labels
 
 # Load data here. Each line in the file is the gene expression of a single cell.
-data, labels = get_data("PATH_TO_YOUR_DATA")
+data, labels = get_data("CITEseq_subsample.txt")
 
 # We will be selecting a total of 'num_markers' marker genes. Change it as you like.
 num_markers = 25
