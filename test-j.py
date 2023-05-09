@@ -1,5 +1,5 @@
 # Python3.7
-from scGeneFit.functions import *
+from scGeneFit.newcopyjfunctions import *
 import numpy as np
 import scanpy as sc
 import pandas as pd
