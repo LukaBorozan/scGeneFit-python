@@ -323,19 +323,17 @@ def __lp_markers_gurobi(constraints, num_markers, epsilon, fixed, LPvsILP, warm 
 
     # return alphas, betas
     alpha = np.array(x[:d].X)
-    #beta = np.array(x[d:].X)
-    #beta1, beta2 = np.array_split(beta, 2)
     pd.set_option('display.max_rows', None)
-    #alphabeta = pd.DataFrame({"alpha": alpha, "beta1": beta1, "beta2": beta2})
-    
     alphas = pd.DataFrame({"alpha": alpha})
     nonzero = alphas[alphas['alpha'] > 0]
     nonzerosorted = nonzero.sort_values(by='alpha', ascending=False)
     newdict = nonzerosorted.to_dict('dict')
-    print(newdict)
-    
-    
-    
+    zero = alphas[alphas['alpha'] == 0]
+    newzero = zero.to_dict('dict')
+    print("Length fractional:", len(newdict))
+    print("Fractional:", newdict)
+    print("Length zeros:", len(newzero))
+    print("Zeros:", newzero)
     print("Objective value:", M.ObjVal)
     return np.array(x[:d].X), np.array(x[d:].X)
 
