@@ -13,7 +13,7 @@ from annoy import AnnoyIndex
 import sys
 import math
 
-def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling_rate=1, n_neighbors=3, max_constraints=1000, redundancy=0.01, verbose=True, solver='gurobi', fixed_genes = {}):
+def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling_rate=1, n_neighbors=3, max_constraints=1000, redundancy=0.01, verbose=True, solver='gurobi', fixed_genes = {}, num_iterations = 10):
     """marker selection algorithm
     data: Nxd numpy array with point coordinates, N: number of points, d: dimension
     labels: list with labels (N labels, one per point)
@@ -63,15 +63,16 @@ def get_markers(data, labels, num_markers, method='centers', epsilon=1, sampling
             sol = __lp_markers(constraints, num_markers, smallest_norm * epsilon)
             x = sol['x'][0:d]
         else:
-    	    print("ERROR, valid solvers are gurobi and scipy.")    
-    	    return []
+            print("ERROR, valid solvers are gurobi and scipy.")    
+            return []
     else:
-    	t = time.time()
-    	x = __lp_markers_cutting(data, labels, num_markers, epsilon, fixed_genes, verbose) 
+        t = time.time()
+        # x is alpha, y is beta
+        x, y = __lp_markers_cutting(data, labels, num_markers, epsilon, fixed_genes, verbose, num_iterations) 
       
     if verbose:
         print('Time elapsed: {} seconds'.format(time.time() - t))
-        
+
     markers = sorted(range(len(x)), key=lambda i: x[i], reverse=True)[: num_markers]
 
     return markers
@@ -251,7 +252,7 @@ def __lp_markers(constraints, num_markers, epsilon):
 
 # gurobi solver takes constraints, desired number of markers and tolerance,
 # returns (alpha, beta) solution to the LP
-def __lp_markers_gurobi(constraints, num_markers, epsilon, fixed, warm = None):
+def __lp_markers_gurobi(constraints, num_markers, epsilon, fixed, warm = None, ilp = False):
     M = gp.Model("whatever_bro")
     M.setParam('OutputFlag', 0) 
     m, d = constraints.shape
@@ -266,7 +267,10 @@ def __lp_markers_gurobi(constraints, num_markers, epsilon, fixed, warm = None):
        [fixed.get(i, 0) for i in range(d + m)]
     )
     
-    x = M.addMVar(shape = d + m, vtype = GRB.CONTINUOUS, ub = u, lb = l)
+    if ilp:
+        x = M.addMVar(shape = d + m, vtype = GRB.BINARY)
+    else:
+        x = M.addMVar(shape = d + m, vtype = GRB.CONTINUOUS, ub = u, lb = l)
     
     # warm start if can
     if (not warm is None):
@@ -307,7 +311,7 @@ def __lp_markers_gurobi(constraints, num_markers, epsilon, fixed, warm = None):
     # rhs vector
     b = np.concatenate((
         -epsilon * np.ones(m), 
-        np.array([num_markers])
+        np.array([int(num_markers)])
     ))
     
     # add constraints
@@ -320,10 +324,10 @@ def __lp_markers_gurobi(constraints, num_markers, epsilon, fixed, warm = None):
     return np.array(x[:d].X), np.array(x[d:].X)
 
 
-def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed, verbose):
+def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed, verbose, num_iterations):
     # number of genes per cell
     d = data.shape[1]
-    
+
     # used for the removal of the constraints
     D = set([]) # stored pairs of vertices that have been added to the constraints
     offset = 0  # index tracker for the pairs of vertices
@@ -331,7 +335,7 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed, verbose):
     prev = []   # previous iteration
 
     # main loop
-    for i in range(10000):
+    for i in range(num_iterations):
         if verbose:
             print("iteration:", i + 1, flush = True)
 
@@ -348,13 +352,15 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed, verbose):
 
         # debug
         tt = time.time()
-    
+
         # building annoy index
         if (isFirstRun):
             x = np.concatenate((
                 np.ones(num_markers),
                 np.zeros(d - num_markers)
             ))
+            
+            y = np.zeros(0)
             # x = np.ones(d)
             I = __get_annoy_index(samples, x, num_markers)
         else:
@@ -370,56 +376,56 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed, verbose):
             # TODO: in all other runs, we remove inactive constraints from the system matrix
             #B = __prune_cutting_matrix(B, D, M, x, y, delta)
             #offset = B.shape[0]
-            
+
         # debug
         if verbose:
             print("index:", "{:.2f}".format(time.time() - tt), "sec", flush = True)
         tt = time.time()
-        
+
         # building new constraints here
         if (isFirstRun):
             A = __get_cutting_constraints(samples, sample_labels, x, I, D, M, offset, delta, idx)
         else:
             A = __get_cutting_constraints(data, labels, x, I, D, M, offset, delta, None)
-        
+
         # releasing annoy index
-        I.unbuild() 
-        
+        I.unbuild()
+
         # if there are no new constraints to add, we consider the iterations successful
         if (A is None):
             break
-            
+
         if (isFirstRun):
             B = A
         else:
             # appending new constraints to the previous ones and updating the offset
             B = np.concatenate((B, A))
-        
+
         offset = B.shape[0]
-        
+
         # debug
         if verbose:
             print("cons:", "{:.2f}".format(time.time() - tt), "sec", flush = True)
         tt = time.time()
-        
+
         # solving the model, -B is passed for legacy reasons
         if (isFirstRun):
-            x, y = __lp_markers_gurobi(-B, num_markers, delta, fixed) 
+            x, y = __lp_markers_gurobi(-B, num_markers, delta, fixed)
         else:
             x, y = __lp_markers_gurobi(-B, num_markers, delta, fixed, x)
-        
+
         # debug, can delete later
         if verbose:
             print("solving:", B.shape, "{:.2f}".format(time.time() - tt), "sec", flush = True)
         # print(i + 1, "sum_beta:", sum(list(y)), "shape:", B.shape, flush = True)
-       
-		# current iteration
+
+                # current iteration
         if (prev != [] and np.array_equal(prev, x)):
             break
         else:
             prev = x
 
-        zz = [(i, x[i]) for i in range(d) if x[i] > 5e-12] 
+        zz = [(i, x[i]) for i in range(d) if x[i] > 5e-12]
         print(len(zz), zz)
 
         # set to True for per-iteration performance checking
@@ -432,7 +438,8 @@ def __lp_markers_cutting(data, labels, num_markers, epsilon, fixed, verbose):
     if False:
         performance_metrics(data, labels, x, delta, num_markers, D)
 
-    return x
+    return rounding_ilp(data, labels, x, num_markers, delta), y
+    #return x, y
 
 
 # removes inactive constraints, updates B, D and M
@@ -510,7 +517,7 @@ def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta, idx):
     # number of cells
     n, d = data.shape
     # number of nearest neighbors to iterate over
-    nNeighbors = max(int(n / 400) + 1, 20)
+    nNeighbors = 20
     # maximum number of constraints to add per cell
     nConstraints = 1 # if isFirstRun else 10
     # new constraints will be stored here
@@ -521,7 +528,7 @@ def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta, idx):
     # considering pairs of cells (i, j) for all cells i and its m nearest neighbors
     for i in range(n):
         nns = [ # only consider nearest neighbors with different labels
-            j for j in I.get_nns_by_item(i, nNeighbors) 
+            j for j in I.get_nns_by_item(i, nNeighbors)
             if labels[i] != labels[j]
         ]
 
@@ -549,9 +556,9 @@ def __get_cutting_constraints(data, labels, alpha, I, D, M, offset, delta, idx):
                 A.append(v)
                 k += 1
             # nearest neighbors (j's) are sorted, it is safe to break
-            else:  
+            else:
                 break
-            
+
             # add nConstraints constraints in every iteration
             if k == nConstraints:
                 break
@@ -583,6 +590,31 @@ def performance_metrics(data, label, alpha, delta, num_markers, D = None):
     print("violated:", b, "total:", a, "percentage", b / a)
     
 
+def rounding_ilp(data, labels, x, num_markers, delta):
+    coordMap = {}
+    I = []
+    k = 0
+
+    for i in range(len(x)):
+        if (x[i] > 1 - 1e-6):
+            num_markers -= 1    
+        elif (x[i] > 1e-6):
+            coordMap[k] = i
+            I.append(i)
+            k += 1
+
+    ilpData = data[:, np.array(I)]
+    constraints, smallest_norm = __select_constraints_summarized(ilpData, labels)
+    tx, ty = __lp_markers_gurobi(constraints, num_markers, delta, {}, ilp=True)
+
+    for i in range(len(tx)):
+        x[coordMap[i]] = tx[i]
+
+    print(x)
+    print(sum(x))
+
+    return x
+    
 
 def circles_example(N=30, d=5):
     num_markers = 2
